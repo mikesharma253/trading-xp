@@ -81,25 +81,6 @@
   .sym-name { font-weight: 600; font-size: 13px; color: var(--text); }
   .sym-exch { font-size: 10px; color: var(--text2); }
 
-  .tf-group {
-    display: flex;
-    gap: 2px;
-    margin-left: 8px;
-  }
-  .tf-btn {
-    padding: 3px 8px;
-    background: none;
-    border: none;
-    color: var(--text2);
-    font-family: 'IBM Plex Sans', sans-serif;
-    font-size: 12px;
-    cursor: pointer;
-    border-radius: 3px;
-    transition: all 0.1s;
-  }
-  .tf-btn:hover { background: var(--bg3); color: var(--text); }
-  .tf-btn.active { background: var(--blue); color: white; }
-
   .sep { width: 1px; height: 20px; background: var(--border); margin: 0 6px; }
 
   .tool-btn {
@@ -620,16 +601,6 @@
   </div>
 
   <div class="sep"></div>
-  <div class="tf-group" id="tf-group">
-    <button class="tf-btn" data-tf="1">1m</button>
-    <button class="tf-btn" data-tf="5">5m</button>
-    <button class="tf-btn active" data-tf="15">15m</button>
-    <button class="tf-btn" data-tf="30">30m</button>
-    <button class="tf-btn" data-tf="60">1h</button>
-    <button class="tf-btn" data-tf="D">1D</button>
-  </div>
-
-  <div class="sep"></div>
 
   <!-- Chart type -->
   <button class="tool-btn active" id="btn-candle" title="Candlestick">🕯</button>
@@ -806,11 +777,11 @@
       <div class="acct-grid">
         <div class="acct-card" style="grid-column: 1/-1">
           <div class="acct-card-label">Total Net Worth</div>
-          <div class="acct-card-val" id="acct-networth" style="font-size: 20px;">₹10,000.00</div>
+          <div class="acct-card-val" id="acct-networth" style="font-size: 20px;">₹10,00,000.00</div>
         </div>
         <div class="acct-card">
           <div class="acct-card-label">Cash Balance</div>
-          <div class="acct-card-val" id="acct-balance">₹1,000,000.00</div>
+          <div class="acct-card-val" id="acct-balance">₹10,00,000.00</div>
         </div>
         <div class="acct-card">
           <div class="acct-card-label">Unrealized P&L</div>
@@ -866,7 +837,7 @@
   <div class="sb-item">UTC+5:30 <span id="sb-time">--:--:--</span></div>
   <div class="sb-item">Price: <span id="sb-price">-</span></div>
   <div class="sb-item">Session: <span style="color: var(--green)">OPEN</span></div>
-  <div class="sb-item" style="margin-left: auto;">Balance: <span id="sb-balance">₹1,00,000.00</span></div>
+  <div class="sb-item" style="margin-left: auto;">Balance: <span id="sb-balance">₹10,00,000</span></div>
   <div class="sb-item">P&L: <span id="sb-pnl">₹0.00</span></div>
   <div class="sb-item">Press <kbd style="background:var(--bg4); padding: 1px 4px; border:1px solid var(--border2); border-radius:2px;">B</kbd> Buy · <kbd style="background:var(--bg4); padding: 1px 4px; border:1px solid var(--border2); border-radius:2px;">S</kbd> Sell · <kbd style="background:var(--bg4); padding: 1px 4px; border:1px solid var(--border2); border-radius:2px;">R</kbd> Reset</div>
 </div>
@@ -912,14 +883,14 @@ let state = {
   price: 0,
   candles: [],
   currentCandle: null,
-  balance: 100000,
+  balance: 10000,
   positions: [],
   realizedPnl: 0,
   totalTrades: 0,
   wins: 0,
   bestTrade: 0,
   worstTrade: 0,
-  equityHistory: [10000],
+  equityHistory: [1000000],
   trend: 0,
   newsTimer: 0,
   currentNews: '',
@@ -975,14 +946,14 @@ function resetGame() {
   state.price = sym.base + (Math.random() - 0.5) * sym.base * 0.02;
   state.candles = [];
   state.currentCandle = makeNewCandle(state.price);
-  state.balance = 100000;
+  state.balance = 1000000;
   state.positions = [];
   state.realizedPnl = 0;
   state.totalTrades = 0;
   state.wins = 0;
   state.bestTrade = 0;
   state.worstTrade = 0;
-  state.equityHistory = [10000];
+  state.equityHistory = [1000000];
   state.trend = 0;
   state.newsTimer = 0;
   state.high52 = state.price * 1.05;
@@ -1000,7 +971,7 @@ function resetGame() {
   updateWatchlist();
   updateUI();
   renderAccount();
-  showFlash('Account reset — ₹10,000.00 loaded', 'neutral');
+  showFlash('Account reset — ₹10,00,000.00 loaded', 'neutral');
 }
 
 function makeNewCandle(price) {
@@ -1737,15 +1708,6 @@ document.querySelectorAll('.rp-tab').forEach(tab => {
     if (panel === 'positions') renderPositions();
     if (panel === 'watchlist') updateWatchlist();
     if (panel === 'account') renderAccount();
-  });
-});
-
-// TF buttons
-document.querySelectorAll('#tf-group .tf-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('#tf-group .tf-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    btnPress(btn);
   });
 });
 
