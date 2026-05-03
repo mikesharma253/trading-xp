@@ -1,0 +1,1187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TradeLab</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body style="margin:0;background:#000;">
+  <div id="root"></div>
+  <script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+const SYMBOLS = [
+  { name: "NIFTY50",   exch: "NSE·IDX",  base: 22000, vol: 40,  color: "#0088ff" },
+  { name: "BANKNIFTY", exch: "NSE·IDX",  base: 47000, vol: 90,  color: "#ffcc00" },
+  { name: "RELIANCE",  exch: "NSE·EQ",   base: 2800,  vol: 12,  color: "#00ff88" },
+  { name: "INFY",      exch: "NSE·EQ",   base: 1600,  vol: 8,   color: "#ff3b5c" },
+  { name: "TCS",       exch: "NSE·EQ",   base: 3900,  vol: 14,  color: "#aa44ff" },
+  { name: "BTCUSD",    exch: "CRYPTO",   base: 65000, vol: 250, color: "#ffcc00" },
+];
+
+const NEWS = [
+  { text: "RBI holds repo rate — markets react positively", trend: 0.4 },
+  { text: "Q4 earnings beat estimates — IT sector rallies", trend: 0.6 },
+  { text: "FII outflow ₹2,400 Cr — index under pressure", trend: -0.5 },
+  { text: "GDP growth 7.2% — broad market rally", trend: 0.8 },
+  { text: "Crude spikes 3% — energy stocks surge", trend: 0.2 },
+  { text: "Fed signals rate cut — risk-on globally", trend: 0.6 },
+  { text: "Banking sector selloff — credit concerns", trend: -0.7 },
+  { text: "Tech rotation — growth stocks pressured", trend: -0.4 },
+  { text: "Geopolitical tensions — safe haven demand", trend: -0.6 },
+  { text: "PSU banks strong buying — PSE index +1.2%", trend: 0.5 },
+];
+
+const INIT_BALANCE = 1000000;
+const TICKS_PER_CANDLE = 20;
+
+function fmt(n) { return Math.abs(n).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function fmtP(p) { if (p >= 10000) return p.toFixed(2); if (p >= 100) return p.toFixed(2); return p.toFixed(3); }
+function fmtV(v) { if (v > 1e6) return (v / 1e6).toFixed(1) + "M"; if (v > 1000) return (v / 1000).toFixed(1) + "K"; return v.toFixed(0); }
+
+function makeTick(price, sym, state) {
+  const { momentum, regime, regimeTrend, trend, ticksSinceCandle } = state;
+  const baseVol = sym.vol;
+  const regimeMult = regime === "volatile" ? 2.5 : regime === "trending" ? 0.75 : 1.0;
+  const sigma = baseVol * regimeMult;
+  const mu = (regimeTrend + trend) * 0.008;
+  const dW = gaussianRandom() * sigma * 0.4;
+  const newMomentum = momentum * 0.88 + dW * 0.12;
+  const deviation = (price - sym.base) / sym.base;
+  const meanRevert = -deviation * sigma * 0.08;
+  const jumpProb = 0.018 / TICKS_PER_CANDLE;
+  const jump = Math.random() < jumpProb
+    ? (Math.random() > 0.45 ? 1 : -1) * sigma * (1.8 + Math.random() * 2.5)
+    : 0;
+  const intrabarBias = state.candleOpen > 0
+    ? ((price - state.candleOpen) / (sym.base * 0.002)) * sigma * 0.02
+    : 0;
+  const delta = newMomentum + mu + meanRevert + jump + intrabarBias;
+  const newPrice = Math.max(sym.base * 0.5, Math.min(sym.base * 2.2, price + delta));
+  const volBase = Math.abs(delta) * 800 + 200 + Math.random() * 400;
+  const volSpike = Math.abs(jump) > 0 ? 3 : 1;
+  const absNoise = volBase * volSpike;
+  return { newPrice, newMomentum, absNoise };
+}
+
+function gaussianRandom() {
+  let u = 0, v = 0;
+  while (u === 0) u = Math.random();
+  while (v === 0) v = Math.random();
+  return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+}
+
+function drawChart(canvas, volCanvas, allCandles, currentCandle, price, zoom, positions, pendingOrders, alerts, symName, indicators, chartType) {
+  if (!canvas || !volCanvas) return;
+  const W = canvas.width, H = canvas.height;
+  if (W < 10 || H < 10) return;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, W, H);
+
+  const all = [...allCandles];
+  if (currentCandle) all.push(currentCandle);
+  if (all.length === 0) return;
+
+  const PRICE_COL = 74;
+  const chartW = W - PRICE_COL;
+  const cw = zoom;
+  const gap = Math.max(1, Math.floor(cw * 0.18));
+  const step = cw + gap;
+  const visible = Math.floor(chartW / step) + 2;
+  const vis = all.slice(Math.max(0, all.length - visible));
+
+  const prices = vis.flatMap(c => [c.h, c.l]);
+  let minP = Math.min(...prices), maxP = Math.max(...prices);
+  const pad = (maxP - minP) * 0.15;
+  minP -= pad; maxP += pad;
+  const range = maxP - minP || 1;
+  const TOP = 10, BOT = H - 14;
+  const chartH = BOT - TOP;
+
+  const py = p => TOP + (1 - (p - minP) / range) * chartH;
+  const cx = i => chartW - (vis.length - 1 - i) * step - Math.floor(cw / 2);
+
+  for (let i = 0; i <= 6; i++) {
+    const y = TOP + (i / 6) * chartH;
+    const p = maxP - (i / 6) * range;
+    ctx.strokeStyle = "#0f0f0f"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(chartW, y); ctx.stroke();
+    ctx.fillStyle = "#2a2a2a"; ctx.font = "10px monospace"; ctx.textAlign = "right";
+    ctx.fillText(fmtP(p), W - 4, y + 3);
+  }
+
+  const calcMA = (period) => {
+    return vis.map((c, i) => {
+      const ai = all.length - vis.length + i;
+      if (ai < period - 1) return null;
+      const slice = all.slice(ai - period + 1, ai + 1);
+      return slice.reduce((s, x) => s + x.c, 0) / period;
+    });
+  };
+
+  const drawMA = (period, color, dash = []) => {
+    if (all.length < period) return;
+    const maVals = calcMA(period);
+    ctx.strokeStyle = color; ctx.lineWidth = 1.2; ctx.globalAlpha = 0.85;
+    ctx.setLineDash(dash);
+    ctx.beginPath();
+    let started = false;
+    maVals.forEach((ma, i) => {
+      if (ma === null) return;
+      const x = cx(i), y = py(ma);
+      if (!started) { ctx.moveTo(x, y); started = true; }
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+  };
+
+  const drawBB = () => {
+    const period = 20;
+    if (all.length < period) return;
+    const upper = [], lower = [], mid = [];
+    vis.forEach((c, i) => {
+      const ai = all.length - vis.length + i;
+      if (ai < period - 1) return;
+      const sl = all.slice(ai - period + 1, ai + 1);
+      const mean = sl.reduce((s, x) => s + x.c, 0) / period;
+      const sd = Math.sqrt(sl.reduce((s, x) => s + (x.c - mean) ** 2, 0) / period);
+      const x = cx(i);
+      upper.push({ x, y: py(mean + 2 * sd) });
+      mid.push({ x, y: py(mean) });
+      lower.push({ x, y: py(mean - 2 * sd) });
+    });
+    if (upper.length < 2) return;
+    ctx.globalAlpha = 0.06;
+    ctx.fillStyle = "#00ddff";
+    ctx.beginPath();
+    upper.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+    [...lower].reverse().forEach(p => ctx.lineTo(p.x, p.y));
+    ctx.closePath(); ctx.fill();
+    ctx.globalAlpha = 0.6; ctx.lineWidth = 1;
+    ctx.strokeStyle = "#00ddff"; ctx.setLineDash([]);
+    [upper, mid, lower].forEach((pts, idx) => {
+      ctx.globalAlpha = idx === 1 ? 0.3 : 0.55;
+      ctx.beginPath();
+      pts.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+      ctx.stroke();
+    });
+    ctx.globalAlpha = 1;
+  };
+
+  const drawVWAP = () => {
+    if (all.length < 2) return;
+    let cvp = 0, cv = 0;
+    const vwapAll = all.map(c => {
+      const tp = (c.h + c.l + c.c) / 3;
+      cvp += tp * (c.v || 1);
+      cv += (c.v || 1);
+      return cvp / cv;
+    });
+    ctx.strokeStyle = "#aa44ff"; ctx.lineWidth = 1.4; ctx.globalAlpha = 0.8;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    let s = false;
+    vis.forEach((c, i) => {
+      const ai = all.length - vis.length + i;
+      const x = cx(i), y = py(vwapAll[ai]);
+      s ? ctx.lineTo(x, y) : (ctx.moveTo(x, y), s = true);
+    });
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  };
+
+  if (indicators.ma20) drawMA(20, "#0088ff");
+  if (indicators.ma50) drawMA(50, "#ffcc00", [4, 3]);
+  if (indicators.vwap) drawVWAP();
+  if (indicators.bb) drawBB();
+
+  if (chartType === "line") {
+    ctx.strokeStyle = "#00ff88"; ctx.lineWidth = 1.5;
+    ctx.shadowColor = "rgba(0,255,136,0.2)"; ctx.shadowBlur = 4;
+    ctx.beginPath();
+    vis.forEach((c, i) => { const x = cx(i), y = py(c.c); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    ctx.stroke(); ctx.shadowBlur = 0;
+    const grad = ctx.createLinearGradient(0, TOP, 0, BOT);
+    grad.addColorStop(0, "rgba(0,255,136,0.1)"); grad.addColorStop(1, "rgba(0,255,136,0)");
+    if (vis.length > 1) {
+      ctx.beginPath();
+      vis.forEach((c, i) => { const x = cx(i), y = py(c.c); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      ctx.lineTo(cx(vis.length - 1), BOT); ctx.lineTo(cx(0), BOT); ctx.closePath();
+      ctx.fillStyle = grad; ctx.fill();
+    }
+  } else {
+    vis.forEach((c, i) => {
+      const x = cx(i), half = Math.floor(cw / 2);
+      const bull = c.c >= c.o;
+      const col = bull ? "#00ff88" : "#ff3b5c";
+      const yH = py(c.h), yL = py(c.l), yO = py(c.o), yC = py(c.c);
+      const yTop = Math.min(yO, yC);
+      const yBot = Math.max(yO, yC);
+      const bodyH = Math.max(1.5, yBot - yTop);
+
+      if (chartType === "bar") {
+        ctx.strokeStyle = col; ctx.lineWidth = 1.4;
+        ctx.beginPath(); ctx.moveTo(x, yH); ctx.lineTo(x, yL); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x - half, yO); ctx.lineTo(x, yO); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x, yC); ctx.lineTo(x + half, yC); ctx.stroke();
+      } else {
+        ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.globalAlpha = 0.8;
+        ctx.beginPath(); ctx.moveTo(x, yH); ctx.lineTo(x, yTop); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x, yBot); ctx.lineTo(x, yL); ctx.stroke();
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = bull ? "rgba(0,255,136,0.85)" : "rgba(255,59,92,0.85)";
+        ctx.fillRect(x - half, yTop, cw, bodyH);
+        ctx.strokeStyle = bull ? "#00ff88" : "#ff3b5c";
+        ctx.lineWidth = 0.8;
+        ctx.strokeRect(x - half, yTop, cw, bodyH);
+      }
+    });
+  }
+
+  const currY = py(price);
+  if (currY >= TOP && currY <= BOT) {
+    const lastBull = vis.length > 0 && vis[vis.length - 1].c >= vis[vis.length - 1].o;
+    const priceCol = lastBull ? "#00ff88" : "#ff3b5c";
+    ctx.setLineDash([3, 6]); ctx.strokeStyle = priceCol; ctx.lineWidth = 1; ctx.globalAlpha = 0.5;
+    ctx.beginPath(); ctx.moveTo(0, currY); ctx.lineTo(chartW, currY); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
+    ctx.fillStyle = priceCol; ctx.fillRect(chartW, currY - 9, PRICE_COL, 18);
+    ctx.fillStyle = "#000"; ctx.font = "bold 10px monospace"; ctx.textAlign = "center";
+    ctx.fillText(fmtP(price), chartW + PRICE_COL / 2, currY + 4);
+  }
+
+  positions.forEach(pos => {
+    const pY = py(pos.entry);
+    if (pY < TOP - 10 || pY > BOT + 10) return;
+    const pnl = (price - pos.entry) * pos.qty;
+    const pc = pnl >= 0 ? "#00ff88" : "#ff3b5c";
+    ctx.strokeStyle = pc; ctx.lineWidth = 1; ctx.setLineDash([5, 4]); ctx.globalAlpha = 0.5;
+    ctx.beginPath(); ctx.moveTo(0, pY); ctx.lineTo(chartW, pY); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
+    ctx.fillStyle = pc + "cc"; ctx.fillRect(2, pY - 8, 120, 16);
+    ctx.fillStyle = "#000"; ctx.font = "9px monospace"; ctx.textAlign = "left";
+    ctx.fillText(`${pos.side} ${pos.qty}× @${fmtP(pos.entry)}`, 5, pY + 3);
+  });
+
+  pendingOrders.filter(o => o.sym === symName).forEach(o => {
+    const oY = py(o.triggerPrice);
+    if (oY < TOP || oY > BOT) return;
+    const oc = o.type === "limit" ? (o.side === "BUY" ? "#00ff88" : "#ff3b5c") : "#0088ff";
+    ctx.strokeStyle = oc; ctx.lineWidth = 1; ctx.setLineDash([3, 6]); ctx.globalAlpha = 0.5;
+    ctx.beginPath(); ctx.moveTo(0, oY); ctx.lineTo(chartW, oY); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
+    ctx.fillStyle = oc + "aa"; ctx.fillRect(2, oY - 7, 120, 14);
+    ctx.fillStyle = "#000"; ctx.font = "bold 9px monospace"; ctx.textAlign = "left";
+    ctx.fillText(`${o.type.toUpperCase()} ${o.side} ${o.qty}× @${fmtP(o.triggerPrice)}`, 5, oY + 3);
+  });
+
+  alerts.filter(a => !a.fired && a.sym === symName).forEach(a => {
+    const aY = py(a.price);
+    if (aY < TOP || aY > BOT) return;
+    ctx.strokeStyle = "#ffcc00"; ctx.lineWidth = 1; ctx.setLineDash([4, 7]); ctx.globalAlpha = 0.55;
+    ctx.beginPath(); ctx.moveTo(0, aY); ctx.lineTo(chartW, aY); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
+    ctx.fillStyle = "rgba(255,204,0,0.85)"; ctx.fillRect(chartW - 105, aY - 8, 100, 16);
+    ctx.fillStyle = "#000"; ctx.font = "bold 9px monospace"; ctx.textAlign = "left";
+    ctx.fillText(`ALERT ${a.cond} ${fmtP(a.price)}`, chartW - 102, aY + 3);
+  });
+
+  const vW = volCanvas.width, vH = volCanvas.height;
+  if (vW < 10 || vH < 10) return;
+  const vctx = volCanvas.getContext("2d");
+  vctx.clearRect(0, 0, vW, vH);
+  vctx.fillStyle = "#000"; vctx.fillRect(0, 0, vW, vH);
+  const maxVol = Math.max(...vis.map(c => c.v || 0), 1);
+  vis.forEach((c, i) => {
+    const bx = cx(i), barH = Math.max(1, ((c.v || 0) / maxVol) * (vH - 4));
+    const bc = c.c >= c.o ? "rgba(0,255,136,0.4)" : "rgba(255,59,92,0.4)";
+    vctx.fillStyle = bc;
+    vctx.fillRect(bx - Math.floor(cw / 2), vH - barH - 1, cw, barH);
+    vctx.fillStyle = c.c >= c.o ? "rgba(0,255,136,0.9)" : "rgba(255,59,92,0.9)";
+    vctx.fillRect(bx - Math.floor(cw / 2), vH - barH - 1, cw, 1);
+  });
+}
+
+function drawRSI(canvas, allCandles) {
+  if (!canvas || allCandles.length < 15) return;
+  const W = canvas.width, H = canvas.height;
+  if (W < 10 || H < 10) return;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
+  const closes = allCandles.map(c => c.c);
+  const rsiAll = closes.map((_, i) => {
+    if (i < 14) return null;
+    const sl = closes.slice(i - 14, i + 1);
+    let gains = 0, losses = 0;
+    for (let j = 1; j < sl.length; j++) {
+      const d = sl[j] - sl[j - 1];
+      if (d > 0) gains += d; else losses -= d;
+    }
+    return 100 - 100 / (1 + gains / (losses || 0.0001));
+  });
+  const rsiVals = rsiAll.filter(v => v !== null);
+  if (rsiVals.length < 2) return;
+  const vis = rsiVals.slice(-Math.floor(W / 10));
+  ctx.strokeStyle = "#1a1a1a"; ctx.lineWidth = 1;
+  [30, 50, 70].forEach(level => {
+    const y = H - (level / 100) * H;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    ctx.fillStyle = "#2a2a2a"; ctx.font = "9px monospace"; ctx.textAlign = "left";
+    ctx.fillText(level, 2, y - 2);
+  });
+  ctx.strokeStyle = "#aa44ff"; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  vis.forEach((v, i) => {
+    const x = (i / (vis.length - 1)) * (W - 20) + 10;
+    const y = H - (v / 100) * H;
+    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+  });
+  ctx.stroke();
+  const lastRsi = rsiVals[rsiVals.length - 1];
+  const rsiColor = lastRsi > 70 ? "#ff3b5c" : lastRsi < 30 ? "#00ff88" : "#aa44ff";
+  ctx.fillStyle = rsiColor; ctx.font = "bold 9px monospace"; ctx.textAlign = "left";
+  ctx.fillText("RSI " + lastRsi.toFixed(1), 4, 10);
+}
+
+function DrawTool({ id, title, children, active, onSelect }) {
+  return (
+    <button
+      style={{ width: 28, height: 28, background: active ? "#0088ff" : "none", border: "none", color: active ? "#fff" : "#555", cursor: "pointer", borderRadius: 3, display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.12s" }}
+      title={title}
+      onClick={() => onSelect(id)}
+    >{children}</button>
+  );
+}
+
+function TradeLab() {
+  const mainCanvasRef = useRef(null);
+  const volCanvasRef = useRef(null);
+  const rsiCanvasRef = useRef(null);
+  const containerRef = useRef(null);
+
+  const engineRef = useRef({
+    price: 22000, candles: [], currentCandle: null,
+    momentum: 0, regime: "ranging", regimeTimer: 0, regimeTrend: 0,
+    candleTickCount: 0, newsTimer: 0, trend: 0,
+    watchPrices: SYMBOLS.map(s => s.base),
+    candleOpen: 0,
+    _tickCount: 0,
+  });
+
+  const [symIdx, setSymIdx] = useState(0);
+  const [price, setPrice] = useState(SYMBOLS[0].base);
+  const [candles, setCandles] = useState([]);
+  const [currentCandle, setCurrentCandle] = useState(null);
+  const [balance, setBalance] = useState(INIT_BALANCE);
+  const [positions, setPositions] = useState([]);
+  const [pendingOrders, setPendingOrders] = useState([]);
+  const [alerts, setAlerts] = useState([]);
+  const [realizedPnl, setRealizedPnl] = useState(0);
+  const [totalTrades, setTotalTrades] = useState(0);
+  const [wins, setWins] = useState(0);
+  const [newsText, setNewsText] = useState("Market Open — TradeLab Simulator");
+  const [zoom, setZoom] = useState(9);
+  const [paused, setPaused] = useState(false);
+  const [chartType, setChartType] = useState("candle");
+  const [drawingTool, setDrawingTool] = useState("cursor");
+  const [drawings, setDrawings] = useState([]);
+  const [activePanel, setActivePanel] = useState("order");
+  const [orderType, setOrderType] = useState("market");
+  const [qty, setQty] = useState(1);
+  const [limitPrice, setLimitPrice] = useState("");
+  const [slPrice, setSlPrice] = useState("");
+  const [tpPrice, setTpPrice] = useState("");
+  const [indicators, setIndicators] = useState({ ma20: false, ma50: false, vwap: false, bb: false, rsi: false });
+  const [showIndicators, setShowIndicators] = useState(false);
+  const [showAlertModal, setShowAlertModal] = useState(false);
+  const [alertCond, setAlertCond] = useState("above");
+  const [alertPriceInput, setAlertPriceInput] = useState("");
+  const [alertNote, setAlertNote] = useState("");
+  const [flashMsg, setFlashMsg] = useState(null);
+  const [watchPrices, setWatchPrices] = useState(SYMBOLS.map(s => s.base));
+  const [ohlc, setOhlc] = useState(null);
+  const [dayHigh, setDayHigh] = useState(0);
+  const [dayLow, setDayLow] = useState(Infinity);
+  const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
+
+  const pausedRef = useRef(false);
+  pausedRef.current = paused;
+  const symIdxRef = useRef(0);
+  symIdxRef.current = symIdx;
+  const positionsRef = useRef([]);
+  positionsRef.current = positions;
+
+  const flash = useCallback((msg, type = "buy") => {
+    setFlashMsg({ msg, type });
+    setTimeout(() => setFlashMsg(null), 2500);
+  }, []);
+
+  useEffect(() => {
+    const measure = () => {
+      const el = containerRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      if (r.width > 10 && r.height > 10)
+        setCanvasSize({ w: Math.floor(r.width), h: Math.floor(r.height) });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    if (containerRef.current) ro.observe(containerRef.current);
+    window.addEventListener("resize", measure);
+    return () => { ro.disconnect(); window.removeEventListener("resize", measure); };
+  }, []);
+
+  useEffect(() => {
+    const eng = engineRef.current;
+    const sym = SYMBOLS[symIdxRef.current];
+    eng.price = sym.base * (1 + (Math.random() - 0.5) * 0.005);
+    eng.candleOpen = eng.price;
+    eng.currentCandle = { o: eng.price, h: eng.price, l: eng.price, c: eng.price, v: 0, t: Date.now() };
+    eng.candles = [];
+    eng.momentum = 0;
+    eng.regime = "ranging";
+    eng.regimeTimer = 0;
+    eng.regimeTrend = 0;
+    eng.trend = 0;
+    eng._tickCount = 0;
+
+    const tick = () => {
+      if (pausedRef.current) return;
+      const e = engineRef.current;
+      const sym = SYMBOLS[symIdxRef.current];
+
+      e.regimeTimer--;
+      if (e.regimeTimer <= 0) {
+        const r = Math.random();
+        if (r < 0.52) {
+          e.regime = "ranging"; e.regimeTrend = 0;
+          e.regimeTimer = 60 + Math.random() * 100;
+        } else if (r < 0.78) {
+          e.regime = "trending";
+          e.regimeTrend = (Math.random() > 0.5 ? 1 : -1) * (0.3 + Math.random() * 0.6);
+          e.regimeTimer = 35 + Math.random() * 55;
+        } else {
+          e.regime = "volatile"; e.regimeTrend = 0;
+          e.regimeTimer = 12 + Math.random() * 22;
+        }
+      }
+
+      const { newPrice, newMomentum, absNoise } = makeTick(e.price, sym, {
+        momentum: e.momentum,
+        regime: e.regime,
+        regimeTrend: e.regimeTrend,
+        trend: e.trend,
+        candleOpen: e.candleOpen,
+      });
+      e.price = newPrice;
+      e.momentum = newMomentum;
+
+      const c = e.currentCandle;
+      c.c = e.price;
+      c.h = Math.max(c.h, e.price);
+      c.l = Math.min(c.l, e.price);
+      c.v += absNoise;
+
+      e.candleTickCount++;
+      if (e.candleTickCount >= TICKS_PER_CANDLE) {
+        e.candles.push({ ...c });
+        if (e.candles.length > 600) e.candles.shift();
+        e.candleOpen = e.price;
+        e.currentCandle = { o: e.price, h: e.price, l: e.price, c: e.price, v: 0, t: Date.now() };
+        e.candleTickCount = 0;
+      }
+
+      e.newsTimer--;
+      if (e.newsTimer <= 0) {
+        const evt = NEWS[Math.floor(Math.random() * NEWS.length)];
+        e.trend = evt.trend + (Math.random() - 0.5) * 0.25;
+        e.newsTimer = 90 + Math.floor(Math.random() * 130);
+        setNewsText(evt.text);
+      }
+
+      e.watchPrices = e.watchPrices.map((wp, i) => {
+        if (i === symIdxRef.current) return e.price;
+        const s = SYMBOLS[i];
+        return Math.max(s.base * 0.5, wp + (Math.random() - 0.5) * s.vol * 0.12);
+      });
+
+      e._tickCount++;
+      if (e._tickCount % 3 === 0) {
+        setPrice(e.price);
+        setCandles([...e.candles]);
+        setCurrentCandle({ ...e.currentCandle });
+        setOhlc({ o: e.currentCandle.o, h: e.currentCandle.h, l: e.currentCandle.l, c: e.currentCandle.c, v: e.currentCandle.v });
+        setWatchPrices([...e.watchPrices]);
+        if (e._tickCount % 15 === 0) {
+          setDayHigh(prev => Math.max(prev || 0, e.price));
+          setDayLow(prev => Math.min(prev === Infinity ? e.price : prev, e.price));
+        }
+      }
+    };
+
+    const id = setInterval(tick, 100);
+    return () => clearInterval(id);
+  }, [symIdx]);
+
+  useEffect(() => {
+    if (canvasSize.w < 10 || canvasSize.h < 10) return;
+    drawChart(
+      mainCanvasRef.current, volCanvasRef.current,
+      candles, currentCandle, price, zoom,
+      positions, pendingOrders, alerts,
+      SYMBOLS[symIdx].name, indicators, chartType
+    );
+    if (indicators.rsi) {
+      drawRSI(rsiCanvasRef.current, [...candles, ...(currentCandle ? [currentCandle] : [])]);
+    }
+  }, [candles, currentCandle, price, zoom, positions, pendingOrders, alerts, symIdx, indicators, chartType, canvasSize]);
+
+  const unrealizedPnl = positions.reduce((s, p) => s + (price - p.entry) * p.qty * (p.side === "LONG" ? 1 : -1), 0);
+
+  const executeBuy = useCallback(() => {
+    const q = parseInt(qty) || 1;
+    const sym = SYMBOLS[symIdxRef.current];
+    const curPrice = engineRef.current.price;
+    if (orderType === "market") {
+      const cost = curPrice * q;
+      setBalance(b => {
+        if (cost > b) { flash(`Insufficient funds — Need ₹${fmt(cost)}`, "sell"); return b; }
+        flash(`BUY ${q}× ${sym.name} @ ₹${fmtP(curPrice)}`);
+        setPositions(p => [...p, { sym: sym.name, side: "LONG", qty: q, entry: curPrice, sl: parseFloat(slPrice) || null, tp: parseFloat(tpPrice) || null }]);
+        setTotalTrades(t => t + 1);
+        return b - cost;
+      });
+    } else {
+      const lp = parseFloat(limitPrice);
+      if (!lp || lp <= 0) { flash("Enter a valid price", "sell"); return; }
+      if (orderType === "limit" && lp >= curPrice) { flash(`Limit BUY must be below ${fmtP(curPrice)}`, "sell"); return; }
+      if (orderType === "stop" && lp <= curPrice) { flash(`Stop BUY must be above ${fmtP(curPrice)}`, "sell"); return; }
+      const cost = lp * q;
+      setBalance(b => {
+        if (cost > b) { flash("Insufficient funds", "sell"); return b; }
+        setPendingOrders(p => [...p, { id: Date.now(), sym: sym.name, side: "BUY", type: orderType, triggerPrice: lp, qty: q, reserved: cost }]);
+        flash(`${orderType.toUpperCase()} BUY placed @ ₹${fmtP(lp)}`);
+        return b - cost;
+      });
+    }
+  }, [qty, orderType, limitPrice, slPrice, tpPrice, flash]);
+
+  const closePos = useCallback((pos) => {
+    const curPrice = engineRef.current.price;
+    const pnl = (curPrice - pos.entry) * pos.qty * (pos.side === "LONG" ? 1 : -1);
+    setBalance(b => b + pos.entry * pos.qty + pnl);
+    setRealizedPnl(r => r + pnl);
+    if (pnl > 0) setWins(w => w + 1);
+    setPositions(p => p.filter(x => x !== pos));
+    flash(`CLOSED ${pos.qty}× ${pos.sym} · P&L: ${pnl >= 0 ? "+" : ""}₹${fmt(pnl)}`, pnl >= 0 ? "buy" : "sell");
+  }, [flash]);
+
+  const executeSell = useCallback(() => {
+    const q = parseInt(qty) || 1;
+    const sym = SYMBOLS[symIdxRef.current];
+    const curPrice = engineRef.current.price;
+    if (orderType === "market") {
+      const longs = positionsRef.current.filter(p => p.sym === sym.name && p.side === "LONG");
+      if (!longs.length) { flash("No position to sell", "sell"); return; }
+      closePos(longs[0]);
+    } else {
+      const lp = parseFloat(limitPrice);
+      if (!lp || lp <= 0) { flash("Enter a valid price", "sell"); return; }
+      if (orderType === "limit" && lp <= curPrice) { flash(`Limit SELL must be above ${fmtP(curPrice)}`, "sell"); return; }
+      if (orderType === "stop" && lp >= curPrice) { flash(`Stop SELL must be below ${fmtP(curPrice)}`, "sell"); return; }
+      setPendingOrders(p => [...p, { id: Date.now(), sym: sym.name, side: "SELL", type: orderType, triggerPrice: lp, qty: q, reserved: 0 }]);
+      flash(`${orderType.toUpperCase()} SELL placed @ ₹${fmtP(lp)}`);
+    }
+  }, [qty, orderType, limitPrice, closePos, flash]);
+
+  useEffect(() => {
+    if (!price) return;
+    setPendingOrders(orders => {
+      const fill = [];
+      const keep = orders.filter(o => {
+        if (o.sym !== SYMBOLS[symIdx].name) return true;
+        const hit =
+          (o.type === "limit" && o.side === "BUY" && price <= o.triggerPrice) ||
+          (o.type === "limit" && o.side === "SELL" && price >= o.triggerPrice) ||
+          (o.type === "stop" && o.side === "BUY" && price >= o.triggerPrice) ||
+          (o.type === "stop" && o.side === "SELL" && price <= o.triggerPrice);
+        if (hit) fill.push(o);
+        return !hit;
+      });
+      fill.forEach(o => {
+        if (o.side === "BUY") {
+          setPositions(p => [...p, { sym: o.sym, side: "LONG", qty: o.qty, entry: o.triggerPrice, sl: null, tp: null }]);
+          setTotalTrades(t => t + 1);
+          flash(`✓ ${o.type.toUpperCase()} BUY filled @ ₹${fmtP(o.triggerPrice)}`);
+        } else {
+          setBalance(b => b + o.triggerPrice * o.qty);
+          flash(`✓ ${o.type.toUpperCase()} SELL filled @ ₹${fmtP(o.triggerPrice)}`);
+        }
+      });
+      return keep;
+    });
+
+    setAlerts(al => al.map(a => {
+      if (a.fired || a.sym !== SYMBOLS[symIdx].name) return a;
+      const hit = (a.cond === "above" && price >= a.price) || (a.cond === "below" && price <= a.price);
+      if (hit) { flash(`🔔 ${a.sym} ${a.cond} ₹${fmtP(a.price)} triggered!`); return { ...a, fired: true }; }
+      return a;
+    }));
+  }, [price, symIdx, flash]);
+
+  const addAlert = () => {
+    const ap = parseFloat(alertPriceInput);
+    if (!ap || ap <= 0) return;
+    setAlerts(a => [...a, { id: Date.now(), sym: SYMBOLS[symIdx].name, cond: alertCond, price: ap, note: alertNote, fired: false }]);
+    setAlertPriceInput(""); setAlertNote("");
+    flash(`Alert set: ${SYMBOLS[symIdx].name} ${alertCond} ₹${fmtP(ap)}`);
+  };
+
+  const resetGame = () => {
+    const sym = SYMBOLS[symIdx];
+    const eng = engineRef.current;
+    eng.price = sym.base;
+    eng.candles = []; eng.momentum = 0; eng.regime = "ranging"; eng.trend = 0;
+    eng.candleOpen = sym.base;
+    eng.currentCandle = { o: sym.base, h: sym.base, l: sym.base, c: sym.base, v: 0, t: Date.now() };
+    setBalance(INIT_BALANCE); setPositions([]); setPendingOrders([]); setRealizedPnl(0);
+    setTotalTrades(0); setWins(0); setDayHigh(sym.base); setDayLow(sym.base); setOhlc(null);
+    flash("Account reset — ₹10,00,000 loaded");
+  };
+
+  const switchSym = (i) => {
+    if (positionsRef.current.length > 0) { flash("Close positions before switching", "sell"); return; }
+    setSymIdx(i);
+    const eng = engineRef.current;
+    eng.price = SYMBOLS[i].base;
+    eng.candles = []; eng.momentum = 0; eng.trend = 0;
+    eng.candleOpen = SYMBOLS[i].base;
+    eng.currentCandle = { o: eng.price, h: eng.price, l: eng.price, c: eng.price, v: 0, t: Date.now() };
+    setDayHigh(SYMBOLS[i].base); setDayLow(SYMBOLS[i].base); setOhlc(null);
+    flash(`Switched to ${SYMBOLS[i].name}`);
+  };
+
+  const allC = [...candles, ...(currentCandle ? [currentCandle] : [])];
+  let signal = "NEUTRAL", sigColor = "#444";
+  if (allC.length >= 30) {
+    const closes = allC.map(c => c.c);
+    const ema = (data, p) => { const k = 2 / (p + 1); let e = data[0]; for (let i = 1; i < data.length; i++) e = data[i] * k + e * (1 - k); return e; };
+    const last15 = closes.slice(-15);
+    let g = 0, lss = 0;
+    for (let i = 1; i < last15.length; i++) { const d = last15[i] - last15[i - 1]; if (d > 0) g += d; else lss -= d; }
+    const rsiVal = 100 - 100 / (1 + g / (lss || 0.001));
+    const macd = ema(closes.slice(-40), 12) - ema(closes.slice(-60), 26);
+    const ema9 = ema(closes.slice(-25), 9), ema21 = ema(closes.slice(-40), 21);
+    let score = 0;
+    if (rsiVal < 30) score += 2; else if (rsiVal > 70) score -= 2; else if (rsiVal > 55) score += 1; else score -= 1;
+    if (macd > 0) score += 1; else score -= 1;
+    if (ema9 > ema21) score += 1; else score -= 1;
+    if (engineRef.current.trend > 0.3) score += 1; else if (engineRef.current.trend < -0.3) score -= 1;
+    if (score >= 3) { signal = "STRONG BUY"; sigColor = "#00ff88"; }
+    else if (score >= 1) { signal = "BUY"; sigColor = "#00cc66"; }
+    else if (score <= -3) { signal = "STRONG SELL"; sigColor = "#ff3b5c"; }
+    else if (score <= -1) { signal = "SELL"; sigColor = "#ff6b6b"; }
+    else { signal = "NEUTRAL"; sigColor = "#555"; }
+  }
+
+  const networth = balance + unrealizedPnl + positions.reduce((s, p) => s + p.entry * p.qty, 0);
+  const totalPnl = realizedPnl + unrealizedPnl;
+  const pct = ohlc && ohlc.o ? ((ohlc.c - ohlc.o) / ohlc.o * 100).toFixed(2) : null;
+
+  useEffect(() => {
+    const h = (e) => {
+      if (e.target.tagName === "INPUT") return;
+      if (e.key === "b" || e.key === "B") executeBuy();
+      if (e.key === "s" || e.key === "S") executeSell();
+      if (e.key === "r" || e.key === "R") resetGame();
+      if (e.key === "+" || e.key === "=") setZoom(z => Math.min(22, z + 1));
+      if (e.key === "-") setZoom(z => Math.max(3, z - 1));
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [executeBuy, executeSell]);
+
+  const S = {
+    root: { display: "flex", flexDirection: "column", height: "100vh", width: "100vw", background: "#000", color: "#e0e0e0", fontFamily: "'IBM Plex Mono',monospace", fontSize: 12, overflow: "hidden" },
+    topbar: { height: 38, background: "#080808", borderBottom: "1px solid #181818", display: "flex", alignItems: "center", padding: "0 8px", gap: 4, flexShrink: 0, zIndex: 100 },
+    logo: { fontWeight: 700, fontSize: 14, color: "#00ff88", marginRight: 10, letterSpacing: -0.5 },
+    symBlock: { display: "flex", alignItems: "center", gap: 6, background: "#0d0d0d", border: "1px solid #1c1c1c", borderRadius: 4, padding: "4px 10px", cursor: "pointer" },
+    sep: { width: 1, height: 20, background: "#1c1c1c", margin: "0 5px" },
+    tbBtn: (active) => ({ width: 28, height: 28, background: active ? "#0088ff" : "none", border: "none", color: active ? "#fff" : "#555", cursor: "pointer", borderRadius: 3, display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.12s" }),
+    main: { flex: 1, display: "flex", overflow: "hidden", minHeight: 0 },
+    lefttool: { width: 44, background: "#080808", borderRight: "1px solid #181818", display: "flex", flexDirection: "column", alignItems: "center", padding: "8px 0", gap: 3, flexShrink: 0 },
+    ltBtn: (active) => ({ width: 34, height: 34, background: active ? "rgba(0,136,255,0.12)" : "none", border: "none", color: active ? "#0088ff" : "#333", cursor: "pointer", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s" }),
+    ltSep: { width: 26, height: 1, background: "#141414", margin: "4px 0" },
+    chartzone: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0, minWidth: 0 },
+    chartWrap: { flex: 1, position: "relative", overflow: "hidden", minHeight: 0, minWidth: 0 },
+    volpanel: { height: 68, background: "#000", borderTop: "1px solid #141414", position: "relative", flexShrink: 0 },
+    rsipanel: { height: 68, background: "#000", borderTop: "1px solid #141414", position: "relative", flexShrink: 0 },
+    rightpanel: { width: 260, background: "#080808", borderLeft: "1px solid #181818", display: "flex", flexDirection: "column", flexShrink: 0 },
+    rpTabs: { display: "flex", borderBottom: "1px solid #181818", flexShrink: 0 },
+    rpTab: (active) => ({ flex: 1, padding: "9px 4px", textAlign: "center", cursor: "pointer", fontSize: 10, color: active ? "#e0e0e0" : "#444", borderBottom: active ? "2px solid #0088ff" : "2px solid transparent", fontWeight: active ? 700 : 400, transition: "all 0.15s" }),
+    rpContent: { flex: 1, overflowY: "auto" },
+    section: { padding: 10, borderBottom: "1px solid #141414" },
+    sectionTitle: { fontSize: 9, textTransform: "uppercase", letterSpacing: "0.8px", color: "#333", fontWeight: 700, marginBottom: 8 },
+    bidAsk: (side) => ({ flex: 1, borderRadius: 4, padding: 8, textAlign: "center", cursor: "pointer", background: side === "buy" ? "rgba(0,255,136,0.07)" : "rgba(255,59,92,0.07)", border: `1px solid ${side === "buy" ? "#00993d" : "#991833"}` }),
+    otTab: (active) => ({ flex: 1, padding: "5px 4px", border: `1px solid ${active ? "#0088ff" : "#1c1c1c"}`, background: active ? "#0088ff" : "none", color: active ? "#fff" : "#555", fontFamily: "inherit", fontSize: 10, borderRadius: 3, cursor: "pointer" }),
+    input: { width: "100%", background: "#0a0a0a", border: "1px solid #1c1c1c", color: "#e0e0e0", fontFamily: "inherit", fontSize: 12, padding: "6px 8px", borderRadius: 3, outline: "none", boxSizing: "border-box" },
+    btnBuy: { flex: 1, padding: 10, border: "none", borderRadius: 4, background: "linear-gradient(135deg,#00ff88,#00cc66)", color: "#000", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" },
+    btnSell: { flex: 1, padding: 10, border: "none", borderRadius: 4, background: "linear-gradient(135deg,#ff3b5c,#cc2244)", color: "#fff", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" },
+    acctCard: { background: "#0a0a0a", border: "1px solid #181818", borderRadius: 4, padding: 8 },
+    statusbar: { height: 22, background: "#080808", borderTop: "1px solid #141414", display: "flex", alignItems: "center", padding: "0 10px", gap: 14, flexShrink: 0 },
+    newsbar: { height: 24, background: "#050505", borderTop: "1px solid #141414", display: "flex", alignItems: "center", overflow: "hidden", flexShrink: 0 },
+    modal: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 500, display: "flex", alignItems: "center", justifyContent: "center" },
+    modalBox: { background: "#0c0c0c", border: "1px solid #222", borderRadius: 10, width: 340, maxHeight: "80vh", overflow: "hidden", display: "flex", flexDirection: "column" },
+    modalHeader: { background: "#111", padding: "14px 16px", borderBottom: "1px solid #1c1c1c", display: "flex", alignItems: "center", justifyContent: "space-between" },
+    toggle: (on) => ({ width: 36, height: 20, borderRadius: 20, background: on ? "rgba(0,255,136,0.12)" : "#181818", border: `1px solid ${on ? "#00ff88" : "#2a2a2a"}`, cursor: "pointer", position: "relative", transition: "all 0.2s", flexShrink: 0 }),
+    toggleDot: (on) => ({ position: "absolute", width: 14, height: 14, borderRadius: "50%", background: on ? "#00ff88" : "#333", top: 2, left: on ? 18 : 2, transition: "all 0.2s" }),
+    watchItem: (active) => ({ display: "flex", alignItems: "center", padding: "7px 10px", borderBottom: "1px solid #141414", cursor: "pointer", background: active ? "rgba(0,136,255,0.05)" : "none", borderLeft: active ? "2px solid #0088ff" : "2px solid transparent" }),
+    posRow: { display: "flex", alignItems: "center", padding: "7px 8px", borderBottom: "1px solid #141414", fontSize: 10, gap: 5 },
+    pendRow: { display: "flex", alignItems: "center", padding: "5px 10px", borderBottom: "1px solid #141414", gap: 5, fontSize: 10 },
+    flash: (type) => ({ position: "fixed", top: 50, right: 16, background: "#0c0c0c", border: `1px solid ${type === "buy" ? "#00ff88" : "#ff3b5c"}`, borderRadius: 6, padding: "10px 16px", fontSize: 11, zIndex: 999, display: "flex", alignItems: "center", gap: 8, minWidth: 200, boxShadow: "0 8px 24px rgba(0,0,0,0.6)" }),
+  };
+
+  return (
+    <div style={S.root}>
+      <div style={S.topbar}>
+        <div style={S.logo}>⬡ TradeLab</div>
+        <div style={S.symBlock}>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 12 }}>{SYMBOLS[symIdx].name}</div>
+            <div style={{ fontSize: 9, color: "#444" }}>{SYMBOLS[symIdx].exch}</div>
+          </div>
+        </div>
+        <div style={S.sep} />
+
+        <button style={S.tbBtn(chartType === "candle")} onClick={() => setChartType("candle")} title="Candlestick">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <line x1="4" y1="1" x2="4" y2="3" stroke="#ff3b5c" strokeWidth="1.2" strokeLinecap="round" />
+            <rect x="2.5" y="3" width="3" height="5" rx="0.4" fill="rgba(255,59,92,0.8)" stroke="#ff3b5c" strokeWidth="0.8" />
+            <line x1="4" y1="8" x2="4" y2="11" stroke="#ff3b5c" strokeWidth="1.2" strokeLinecap="round" />
+            <line x1="10" y1="2" x2="10" y2="4" stroke="#00ff88" strokeWidth="1.2" strokeLinecap="round" />
+            <rect x="8.5" y="4" width="3" height="6" rx="0.4" fill="rgba(0,255,136,0.8)" stroke="#00ff88" strokeWidth="0.8" />
+            <line x1="10" y1="10" x2="10" y2="14" stroke="#00ff88" strokeWidth="1.2" strokeLinecap="round" />
+          </svg>
+        </button>
+        <button style={S.tbBtn(chartType === "line")} onClick={() => setChartType("line")} title="Line">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><polyline points="1,12 4,7 8,9 12,3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        </button>
+        <button style={S.tbBtn(chartType === "bar")} onClick={() => setChartType("bar")} title="Bar">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <line x1="4" y1="2" x2="4" y2="11" stroke="#ff3b5c" strokeWidth="1.4" strokeLinecap="round" />
+            <line x1="2.5" y1="4" x2="4" y2="4" stroke="#ff3b5c" strokeWidth="1.2" strokeLinecap="round" />
+            <line x1="4" y1="8" x2="5.5" y2="8" stroke="#ff3b5c" strokeWidth="1.2" strokeLinecap="round" />
+            <line x1="10" y1="1" x2="10" y2="12" stroke="#00ff88" strokeWidth="1.4" strokeLinecap="round" />
+            <line x1="8.5" y1="7" x2="10" y2="7" stroke="#00ff88" strokeWidth="1.2" strokeLinecap="round" />
+            <line x1="10" y1="4" x2="11.5" y2="4" stroke="#00ff88" strokeWidth="1.2" strokeLinecap="round" />
+          </svg>
+        </button>
+        <div style={S.sep} />
+
+        <DrawTool id="cursor" title="Cursor" active={drawingTool === "cursor"} onSelect={setDrawingTool}>
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2 2l9 4-4.5 1.5-1.5 4.5z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" /></svg>
+        </DrawTool>
+        <DrawTool id="hline" title="Horizontal Line" active={drawingTool === "hline"} onSelect={setDrawingTool}>
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><line x1="1" y1="6.5" x2="12" y2="6.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeDasharray="2 2" /></svg>
+        </DrawTool>
+        <DrawTool id="line" title="Trend Line" active={drawingTool === "line"} onSelect={setDrawingTool}>
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><line x1="2" y1="11" x2="11" y2="2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /><circle cx="2" cy="11" r="1.3" fill="currentColor" /><circle cx="11" cy="2" r="1.3" fill="currentColor" /></svg>
+        </DrawTool>
+        <button style={S.tbBtn(false)} title="Clear drawings" onClick={() => setDrawings([])}>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><line x1="2" y1="2" x2="10" y2="10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /><line x1="10" y1="2" x2="2" y2="10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
+        </button>
+
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8, fontSize: 10, alignItems: "center" }}>
+          {ohlc ? (
+            <>
+              <span style={{ color: "#333" }}>O <span style={{ color: "#888" }}>{fmtP(ohlc.o)}</span></span>
+              <span style={{ color: "#333" }}>H <span style={{ color: "#00cc66" }}>{fmtP(ohlc.h)}</span></span>
+              <span style={{ color: "#333" }}>L <span style={{ color: "#cc2244" }}>{fmtP(ohlc.l)}</span></span>
+              <span style={{ color: "#333" }}>C <span style={{ color: "#e0e0e0" }}>{fmtP(ohlc.c)}</span></span>
+              {pct !== null && (
+                <span style={{ color: parseFloat(pct) >= 0 ? "#00ff88" : "#ff3b5c", fontWeight: 700 }}>
+                  {parseFloat(pct) >= 0 ? "+" : ""}{pct}%
+                </span>
+              )}
+              <span style={{ color: "#222" }}>|</span>
+              <span style={{ color: "#2a2a2a" }}>Vol <span style={{ color: "#444" }}>{fmtV(ohlc.v)}</span></span>
+            </>
+          ) : (
+            <span style={{ color: "#333" }}>Loading...</span>
+          )}
+        </div>
+      </div>
+
+      <div style={S.main}>
+        <div style={S.lefttool}>
+          <button style={S.ltBtn(showIndicators)} title="Indicators" onClick={() => setShowIndicators(v => !v)}>
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+              <polyline points="2,14 5,9 8,11 12,5 16,7" stroke="#0088ff" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+              <polyline points="2,12 5,8 8,10 12,4 16,6" stroke="#ffcc00" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" fill="none" opacity="0.6" />
+            </svg>
+          </button>
+          <button style={S.ltBtn(showAlertModal)} title="Price Alerts" onClick={() => setShowAlertModal(v => !v)}>
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+              <path d="M9 2C6.2 2 4 4.2 4 7v4l-1.5 2h13L14 11V7c0-2.8-2.2-5-5-5z" stroke="currentColor" strokeWidth="1.2" fill="currentColor" fillOpacity="0.07" />
+              <line x1="7.2" y1="15" x2="10.8" y2="15" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+              <circle cx="14" cy="3.5" r="2" fill="#ff3b5c" />
+            </svg>
+          </button>
+          <div style={S.ltSep} />
+          <button style={S.ltBtn(false)} title="Zoom In" onClick={() => setZoom(z => Math.min(22, z + 2))}>
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="8" cy="8" r="5.5" stroke="currentColor" strokeWidth="1.3" /><line x1="8" y1="5.5" x2="8" y2="10.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /><line x1="5.5" y1="8" x2="10.5" y2="8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /><line x1="12.5" y1="12.5" x2="16" y2="16" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
+          </button>
+          <button style={S.ltBtn(false)} title="Zoom Out" onClick={() => setZoom(z => Math.max(3, z - 2))}>
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="8" cy="8" r="5.5" stroke="currentColor" strokeWidth="1.3" /><line x1="5.5" y1="8" x2="10.5" y2="8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /><line x1="12.5" y1="12.5" x2="16" y2="16" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
+          </button>
+          <div style={S.ltSep} />
+          <button style={S.ltBtn(paused)} title="Pause / Resume" onClick={() => setPaused(p => !p)}>
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+              {paused
+                ? <polygon points="5,3 14,9 5,15" fill="currentColor" />
+                : <><rect x="4" y="3" width="3.5" height="12" rx="1" fill="currentColor" /><rect x="10.5" y="3" width="3.5" height="12" rx="1" fill="currentColor" /></>}
+            </svg>
+          </button>
+          <button style={S.ltBtn(false)} title="Reset Account" onClick={resetGame}>
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M3.5 9A5.5 5.5 0 1 0 5.2 5.2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /><polyline points="2,3 5.2,5.2 3,8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" fill="none" /></svg>
+          </button>
+        </div>
+
+        <div style={S.chartzone}>
+          <div style={S.chartWrap} ref={containerRef}>
+            <canvas
+              ref={mainCanvasRef}
+              width={canvasSize.w || 100}
+              height={canvasSize.h || 100}
+              style={{ display: "block", width: "100%", height: "100%", cursor: "crosshair" }}
+            />
+          </div>
+          <div style={S.volpanel}>
+            <canvas
+              ref={volCanvasRef}
+              width={canvasSize.w || 100}
+              height={68}
+              style={{ display: "block", width: "100%", height: "100%" }}
+            />
+            <span style={{ position: "absolute", top: 3, left: 6, fontSize: 8, color: "#222", fontFamily: "monospace" }}>VOLUME</span>
+          </div>
+          {indicators.rsi && (
+            <div style={S.rsipanel}>
+              <canvas
+                ref={rsiCanvasRef}
+                width={canvasSize.w || 100}
+                height={68}
+                style={{ display: "block", width: "100%", height: "100%" }}
+              />
+              <span style={{ position: "absolute", top: 3, left: 6, fontSize: 8, color: "#444", fontFamily: "monospace" }}>RSI(14)</span>
+            </div>
+          )}
+        </div>
+
+        <div style={S.rightpanel}>
+          <div style={S.rpTabs}>
+            {["order", "positions", "watchlist", "account"].map(p => (
+              <div key={p} style={S.rpTab(activePanel === p)} onClick={() => setActivePanel(p)}>
+                {p.charAt(0).toUpperCase() + p.slice(1, 4)}
+              </div>
+            ))}
+          </div>
+          <div style={S.rpContent}>
+
+            {activePanel === "order" && <>
+              <div style={S.section}>
+                <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+                  <div style={S.bidAsk("sell")} onClick={executeSell}>
+                    <div style={{ fontSize: 8, color: "#ff3b5c", textTransform: "uppercase", letterSpacing: 1, marginBottom: 3 }}>SELL</div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: "#ff3b5c" }}>{fmtP(price - 0.05)}</div>
+                  </div>
+                  <div style={S.bidAsk("buy")} onClick={executeBuy}>
+                    <div style={{ fontSize: 8, color: "#00ff88", textTransform: "uppercase", letterSpacing: 1, marginBottom: 3 }}>BUY</div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: "#00ff88" }}>{fmtP(price + 0.05)}</div>
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", gap: 3, marginBottom: 10 }}>
+                  {["market", "limit", "stop"].map(t => (
+                    <button key={t} style={S.otTab(orderType === t)} onClick={() => setOrderType(t)}>
+                      {t.charAt(0).toUpperCase() + t.slice(1)}
+                    </button>
+                  ))}
+                </div>
+
+                {orderType !== "market" && (
+                  <div style={{ marginBottom: 8 }}>
+                    <div style={{ fontSize: 9, color: "#555", marginBottom: 3 }}>{orderType === "limit" ? "Limit" : "Stop"} Price</div>
+                    <input style={S.input} type="number" value={limitPrice} onChange={e => setLimitPrice(e.target.value)} placeholder={fmtP(price)} />
+                  </div>
+                )}
+
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ fontSize: 9, color: "#555", marginBottom: 3, display: "flex", justifyContent: "space-between" }}>
+                    <span>Quantity</span>
+                    <span style={{ color: "#2a2a2a" }}>≈ ₹{fmt(price * (parseInt(qty) || 1))}</span>
+                  </div>
+                  <input style={S.input} type="number" value={qty} onChange={e => setQty(e.target.value)} min={1} />
+                </div>
+
+                <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+                  <div style={{ flex: 1, background: "#0a0a0a", border: "1px solid #181818", borderRadius: 3, padding: 6 }}>
+                    <div style={{ fontSize: 8, color: "#cc2244", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 }}>Stop Loss</div>
+                    <input style={{ background: "none", border: "none", color: "#e0e0e0", fontFamily: "monospace", fontSize: 11, width: "100%", outline: "none" }} type="number" value={slPrice} onChange={e => setSlPrice(e.target.value)} placeholder={fmtP(price * 0.99)} />
+                  </div>
+                  <div style={{ flex: 1, background: "#0a0a0a", border: "1px solid #181818", borderRadius: 3, padding: 6 }}>
+                    <div style={{ fontSize: 8, color: "#00cc66", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 }}>Take Profit</div>
+                    <input style={{ background: "none", border: "none", color: "#e0e0e0", fontFamily: "monospace", fontSize: 11, width: "100%", outline: "none" }} type="number" value={tpPrice} onChange={e => setTpPrice(e.target.value)} placeholder={fmtP(price * 1.01)} />
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button style={S.btnBuy} onClick={executeBuy}>BUY</button>
+                  <button style={S.btnSell} onClick={executeSell}>SELL</button>
+                </div>
+              </div>
+
+              {pendingOrders.length > 0 && (
+                <div style={S.section}>
+                  <div style={S.sectionTitle}>Pending <span style={{ color: "#00ff88" }}>{pendingOrders.length}</span></div>
+                  {pendingOrders.map(o => (
+                    <div key={o.id} style={S.pendRow}>
+                      <span style={{ padding: "1px 4px", borderRadius: 2, fontSize: 8, fontWeight: 700, background: `rgba(${o.side === "BUY" ? "0,255,136" : "255,59,92"},0.12)`, color: o.side === "BUY" ? "#00ff88" : "#ff3b5c" }}>{o.type.toUpperCase()} {o.side}</span>
+                      <span style={{ flex: 1, color: "#555" }}>{o.qty}× @{fmtP(o.triggerPrice)}</span>
+                      <button onClick={() => setPendingOrders(p => p.filter(x => x.id !== o.id))} style={{ background: "none", border: "1px solid #1c1c1c", color: "#444", cursor: "pointer", padding: "2px 5px", borderRadius: 2, fontSize: 10 }}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div style={S.section}>
+                <div style={S.sectionTitle}>Market Stats</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                  {[
+                    ["Day High", fmtP(dayHigh || price), "#00cc66"],
+                    ["Day Low", fmtP(dayLow === Infinity ? price : dayLow), "#cc2244"],
+                    ["LTP", fmtP(price), "#e0e0e0"],
+                    ["Regime", engineRef.current.regime, "#555"],
+                  ].map(([l, v, c]) => (
+                    <div key={l} style={S.acctCard}>
+                      <div style={{ fontSize: 8, color: "#2a2a2a", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>{l}</div>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: c }}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div style={S.section}>
+                <div style={S.sectionTitle}>Technical Signal</div>
+                <div style={{ textAlign: "center", padding: "8px 0" }}>
+                  <div style={{ fontSize: 20, marginBottom: 4 }}>{signal.includes("BUY") ? "▲" : signal.includes("SELL") ? "▼" : "◆"}</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: sigColor }}>{signal}</div>
+                  <div style={{ fontSize: 9, color: "#2a2a2a", marginTop: 4 }}>RSI · MACD · EMA · Trend</div>
+                </div>
+              </div>
+            </>}
+
+            {activePanel === "positions" && <>
+              <div style={S.section}><div style={S.sectionTitle}>Open Positions</div></div>
+              {positions.length === 0
+                ? <div style={{ padding: 24, textAlign: "center", color: "#2a2a2a" }}>No open positions</div>
+                : positions.map((pos, i) => {
+                  const pnl = (price - pos.entry) * pos.qty * (pos.side === "LONG" ? 1 : -1);
+                  return (
+                    <div key={i} style={S.posRow}>
+                      <span style={{ color: "#e0e0e0", fontWeight: 700, minWidth: 55 }}>{pos.sym}</span>
+                      <span style={{ color: pos.side === "LONG" ? "#00ff88" : "#ff3b5c", fontSize: 9 }}>{pos.side}</span>
+                      <span style={{ color: "#444" }}>{pos.qty}×</span>
+                      <span style={{ color: "#333" }}>@{fmtP(pos.entry)}</span>
+                      <span style={{ marginLeft: "auto", color: pnl >= 0 ? "#00ff88" : "#ff3b5c" }}>{pnl >= 0 ? "+" : ""}₹{fmt(pnl)}</span>
+                      <button onClick={() => closePos(pos)} style={{ background: "none", border: "1px solid #181818", color: "#333", cursor: "pointer", padding: "2px 5px", borderRadius: 2, fontSize: 10 }}>✕</button>
+                    </div>
+                  );
+                })
+              }
+            </>}
+
+            {activePanel === "watchlist" && SYMBOLS.map((s, i) => {
+              const wp = watchPrices[i] || s.base;
+              const chg = ((wp - s.base) / s.base * 100).toFixed(2);
+              const up = parseFloat(chg) >= 0;
+              return (
+                <div key={i} style={S.watchItem(symIdx === i)} onClick={() => switchSym(i)}>
+                  <div style={{ width: 26, height: 26, borderRadius: "50%", background: s.color + "18", color: s.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, marginRight: 8, flexShrink: 0 }}>{s.name.slice(0, 2)}</div>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 11 }}>{s.name}</div>
+                    <div style={{ fontSize: 9, color: "#333" }}>{s.exch}</div>
+                  </div>
+                  <div style={{ marginLeft: "auto", textAlign: "right" }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: up ? "#00ff88" : "#ff3b5c" }}>{fmtP(wp)}</div>
+                    <div style={{ fontSize: 9, color: up ? "#00cc66" : "#cc2244" }}>{up ? "+" : ""}{chg}%</div>
+                  </div>
+                </div>
+              );
+            })}
+
+            {activePanel === "account" && (
+              <div style={{ padding: 10 }}>
+                <div style={{ ...S.acctCard, marginBottom: 8 }}>
+                  <div style={{ fontSize: 8, color: "#2a2a2a", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Net Worth</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: "#e0e0e0" }}>₹{fmt(networth)}</div>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                  {[
+                    ["Cash", `₹${fmt(balance)}`, "#e0e0e0"],
+                    ["Unrealized", `${unrealizedPnl >= 0 ? "+" : ""}₹${fmt(unrealizedPnl)}`, unrealizedPnl >= 0 ? "#00ff88" : "#ff3b5c"],
+                    ["Realized", `${realizedPnl >= 0 ? "+" : ""}₹${fmt(realizedPnl)}`, realizedPnl >= 0 ? "#00ff88" : "#ff3b5c"],
+                    ["Trades", totalTrades, "#888"],
+                    ["Win Rate", totalTrades > 0 ? `${(wins / totalTrades * 100).toFixed(1)}%` : "—", "#888"],
+                    ["Return", `${((networth / INIT_BALANCE - 1) * 100).toFixed(2)}%`, networth >= INIT_BALANCE ? "#00ff88" : "#ff3b5c"],
+                  ].map(([l, v, c]) => (
+                    <div key={l} style={S.acctCard}>
+                      <div style={{ fontSize: 8, color: "#2a2a2a", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>{l}</div>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: c }}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+                <button onClick={resetGame} style={{ width: "100%", marginTop: 10, padding: 9, background: "#0a0a0a", border: "1px solid #1c1c1c", color: "#888", fontFamily: "inherit", fontSize: 11, borderRadius: 4, cursor: "pointer" }}>↺ Reset Account</button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div style={S.newsbar}>
+        <div style={{ padding: "0 10px", fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, background: "#00ff88", color: "#000", height: "100%", display: "flex", alignItems: "center", flexShrink: 0 }}>LIVE</div>
+        <div style={{ flex: 1, overflow: "hidden", padding: "0 10px" }}>
+          <div style={{ fontSize: 10, color: "#444", whiteSpace: "nowrap", animation: "marquee 32s linear infinite" }}>{newsText}</div>
+        </div>
+      </div>
+
+      <div style={S.statusbar}>
+        <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#00ff88", animation: "pulse 2s infinite", flexShrink: 0 }} />
+        <span style={{ fontSize: 9, color: "#00ff88", fontWeight: 700 }}>LIVE SIM</span>
+        <span style={{ fontSize: 9, color: "#2a2a2a" }}>Price: <span style={{ color: "#555" }}>{fmtP(price)}</span></span>
+        <span style={{ fontSize: 9, color: "#2a2a2a" }}>Session: <span style={{ color: "#00ff88" }}>OPEN</span></span>
+        <span style={{ marginLeft: "auto", fontSize: 9, color: "#2a2a2a" }}>Bal: <span style={{ color: "#888" }}>₹{fmt(balance)}</span></span>
+        <span style={{ fontSize: 9, color: totalPnl >= 0 ? "#00ff88" : "#ff3b5c" }}>P&L: {totalPnl >= 0 ? "+" : ""}₹{fmt(totalPnl)}</span>
+        <span style={{ fontSize: 9, color: "#1c1c1c" }}>B=Buy S=Sell R=Reset</span>
+      </div>
+
+      {showIndicators && (
+        <div style={S.modal} onClick={e => e.target === e.currentTarget && setShowIndicators(false)}>
+          <div style={S.modalBox}>
+            <div style={S.modalHeader}>
+              <span style={{ fontWeight: 700, fontSize: 13 }}>Indicators</span>
+              <button onClick={() => setShowIndicators(false)} style={{ background: "none", border: "none", color: "#444", cursor: "pointer", fontSize: 16 }}>✕</button>
+            </div>
+            <div style={{ overflowY: "auto" }}>
+              <div style={{ padding: "10px 16px 4px", fontSize: 8, textTransform: "uppercase", letterSpacing: 1, color: "#2a2a2a", fontWeight: 700 }}>Overlay</div>
+              {[
+                { key: "ma20", label: "MA 20", sub: "20-period moving average", color: "#0088ff" },
+                { key: "ma50", label: "MA 50", sub: "50-period moving average (dashed)", color: "#ffcc00" },
+                { key: "vwap", label: "VWAP", sub: "Volume weighted average price", color: "#aa44ff" },
+                { key: "bb", label: "Bollinger Bands", sub: "20-period, 2σ envelope", color: "#00ddff" },
+              ].map(({ key, label, sub, color }) => (
+                <div key={key} style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderBottom: "1px solid #141414" }}>
+                  <div style={{ width: 22, height: 2, background: color, borderRadius: 1, marginRight: 10, flexShrink: 0 }} />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, color: "#e0e0e0", fontWeight: 600 }}>{label}</div>
+                    <div style={{ fontSize: 9, color: "#333", marginTop: 1 }}>{sub}</div>
+                  </div>
+                  <div style={S.toggle(indicators[key])} onClick={() => setIndicators(ind => ({ ...ind, [key]: !ind[key] }))}>
+                    <div style={S.toggleDot(indicators[key])} />
+                  </div>
+                </div>
+              ))}
+              <div style={{ padding: "10px 16px 4px", fontSize: 8, textTransform: "uppercase", letterSpacing: 1, color: "#2a2a2a", fontWeight: 700 }}>Sub-panel</div>
+              {[{ key: "rsi", label: "RSI (14)", sub: "Relative Strength Index", color: "#aa44ff" }].map(({ key, label, sub, color }) => (
+                <div key={key} style={{ display: "flex", alignItems: "center", padding: "11px 16px", borderBottom: "1px solid #141414" }}>
+                  <div style={{ width: 22, height: 2, background: color, borderRadius: 1, marginRight: 10, flexShrink: 0 }} />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, color: "#e0e0e0", fontWeight: 600 }}>{label}</div>
+                    <div style={{ fontSize: 9, color: "#333", marginTop: 1 }}>{sub}</div>
+                  </div>
+                  <div style={S.toggle(indicators[key])} onClick={() => setIndicators(ind => ({ ...ind, [key]: !ind[key] }))}>
+                    <div style={S.toggleDot(indicators[key])} />
+                  </div>
+                </div>
+              ))}
+              <div style={{ padding: 16 }}>
+                <button onClick={() => setShowIndicators(false)} style={{ width: "100%", padding: 9, background: "#0f0f0f", border: "1px solid #1c1c1c", color: "#888", fontFamily: "inherit", fontSize: 11, borderRadius: 4, cursor: "pointer" }}>Close</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAlertModal && (
+        <div style={S.modal} onClick={e => e.target === e.currentTarget && setShowAlertModal(false)}>
+          <div style={S.modalBox}>
+            <div style={S.modalHeader}>
+              <span style={{ fontWeight: 700, fontSize: 13 }}>Price Alerts</span>
+              <button onClick={() => setShowAlertModal(false)} style={{ background: "none", border: "none", color: "#444", cursor: "pointer", fontSize: 16 }}>✕</button>
+            </div>
+            <div style={{ padding: 16, borderBottom: "1px solid #141414" }}>
+              <div style={{ fontSize: 9, color: "#2a2a2a", textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 10 }}>New Alert — <span style={{ color: "#00ff88" }}>{SYMBOLS[symIdx].name}</span></div>
+              <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+                {["above", "below"].map(c => (
+                  <button key={c} style={{ flex: 1, padding: 7, borderRadius: 4, border: `1px solid ${alertCond === c ? (c === "above" ? "#00cc66" : "#cc2244") : "#181818"}`, background: alertCond === c ? (c === "above" ? "rgba(0,255,136,0.08)" : "rgba(255,59,92,0.08)") : "none", color: alertCond === c ? (c === "above" ? "#00ff88" : "#ff3b5c") : "#555", fontFamily: "inherit", fontSize: 10, fontWeight: 600, cursor: "pointer" }} onClick={() => setAlertCond(c)}>{c === "above" ? "▲ Price Above" : "▼ Price Below"}</button>
+                ))}
+              </div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                <input style={{ ...S.input, flex: 1 }} type="number" value={alertPriceInput} onChange={e => setAlertPriceInput(e.target.value)} placeholder={fmtP(price)} />
+                <button onClick={() => setAlertPriceInput(fmtP(price))} style={{ padding: "6px 10px", background: "#0a0a0a", border: "1px solid #1c1c1c", color: "#555", cursor: "pointer", borderRadius: 3, fontSize: 10, fontFamily: "inherit" }}>LTP</button>
+              </div>
+              <input style={{ ...S.input, marginBottom: 10 }} type="text" value={alertNote} onChange={e => setAlertNote(e.target.value)} placeholder="Note (optional)" maxLength={50} />
+              <button onClick={addAlert} style={{ width: "100%", padding: 9, background: "#00ff88", border: "none", borderRadius: 4, color: "#000", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>+ Set Alert</button>
+            </div>
+            <div style={{ maxHeight: 200, overflowY: "auto" }}>
+              {alerts.length === 0
+                ? <div style={{ padding: 20, textAlign: "center", color: "#2a2a2a" }}>No alerts set</div>
+                : alerts.map(a => {
+                  const dist = ((a.price - price) / price * 100).toFixed(2);
+                  return (
+                    <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 14px", borderBottom: "1px solid #141414", opacity: a.fired ? 0.45 : 1 }}>
+                      <div style={{ width: 6, height: 6, borderRadius: "50%", background: a.fired ? "#2a2a2a" : a.cond === "above" ? "#00ff88" : "#ff3b5c", flexShrink: 0 }} />
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 10, color: a.cond === "above" ? "#00ff88" : "#ff3b5c" }}>{a.cond === "above" ? "▲" : "▼"} ₹{fmtP(a.price)} {a.fired && <span style={{ fontSize: 8, color: "#333" }}>FIRED</span>}</div>
+                        <div style={{ fontSize: 9, color: "#333" }}>{a.sym} {!a.fired && <span style={{ color: parseFloat(dist) >= 0 ? "#00ff88" : "#ff3b5c" }}>{parseFloat(dist) >= 0 ? "+" : ""}{dist}% away</span>} {a.note && `· ${a.note}`}</div>
+                      </div>
+                      <button onClick={() => setAlerts(al => al.filter(x => x.id !== a.id))} style={{ background: "none", border: "none", color: "#333", cursor: "pointer", fontSize: 12 }}>✕</button>
+                    </div>
+                  );
+                })
+              }
+            </div>
+          </div>
+        </div>
+      )}
+
+      {flashMsg && (
+        <div style={S.flash(flashMsg.type)}>
+          <div style={{ width: 7, height: 7, borderRadius: "50%", background: flashMsg.type === "buy" ? "#00ff88" : "#ff3b5c", flexShrink: 0 }} />
+          <span style={{ fontSize: 10 }}>{flashMsg.msg}</span>
+        </div>
+      )}
+
+      <style>{`
+        @keyframes marquee { from { transform: translateX(100%); } to { transform: translateX(-200%); } }
+        @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
+        ::-webkit-scrollbar { width: 3px; }
+        ::-webkit-scrollbar-track { background: #080808; }
+        ::-webkit-scrollbar-thumb { background: #1c1c1c; border-radius: 2px; }
+      `}</style>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<TradeLab />);
+  </script>
+</body>
+</html>
