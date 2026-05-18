@@ -1,27 +1,44 @@
-<<TradeLab>> creates a live market simulation with:
+# Trading XP
 
-Dynamic price movement (trending, ranging, volatile phases)
-Candlestick, line, and bar charts
-Order execution (market, limit, stop)
-Real-time P&L tracking
-Technical indicators
-Drawing tools (trendlines, Fibonacci, etc.)
-Alerts system
-Watchlist and multiple assets
------------------------------------------------------------------------
------------------------------------------------------------------------
-This project is meant for:
-Practicing trading without risking money
-Understanding price action and market behavior
-Learning how trading platforms actually work under the hood
------------------------------------------------------------------------
------------------------------------------------------------------------
-Tech Stack
-HTML5 (structure)
-CSS3 (UI styling)
-Vanilla JavaScript (logic + simulation engine)
-Canvas API (chart rendering)Tech Stack
-HTML5 (structure)
-CSS3 (UI styling)
-Vanilla JavaScript (logic + simulation engine)
-Canvas API (chart rendering)
+Trading XP is a browser-based trading simulator I made to learn more about
+market psychology, trading strategies, and frontend UI design.
+
+The idea started because I wanted a place to test trades without using
+real money or signing up for complicated platforms.
+
+Features:
+- simulate buying and selling
+- track profit/loss
+- test simple strategies
+- responsive trading dashboard
+
+Built with:
+- HTML
+- CSS
+- JavaScript
+
+One thing I struggled with was keeping chart updates smooth while prices
+changed quickly. I also experimented with different layouts to make the
+UI feel more like a real trading platform.
+
+This project helped me improve my JavaScript logic and frontend design skills.
+
+Tradelab is a browser-based trading simulator I made to learn more about
+market psychology, trading strategies, and frontend UI design.
+
+The idea started because I wanted a place to test trades without using
+real money or signing up for complicated platforms.
+
+Features:
+- simulate buying and selling
+- track profit/loss
+- test simple strategies
+- responsive trading dashboard
+
+Built with:
+- HTML
+- CSS
+- JavaScript
+
+One thing I struggled with was keeping chart updates smooth while prices
+changed quickly. I also experimented with different.
